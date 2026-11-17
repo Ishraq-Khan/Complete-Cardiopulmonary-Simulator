@@ -49,7 +49,6 @@ def compute_model_space_camera_dir(cam_rot):
     cy, sy = math.cos(ry), math.sin(ry)
     cz, sz = math.cos(rz), math.sin(rz)
 
-    # Third row of R = Rx(rx) @ Ry(ry) @ Rz(rz) equals R^T @ [0, 0, 1]^T
     vx = -cx * sy * cz + sx * sz
     vy = cx * sy * sz + sx * cz
     vz = cx * cy
@@ -98,9 +97,9 @@ def compute_vertex_normals(vertices, indices):
     return normalize(normals)
 
 
-def build_tube_mesh(centerline, radii, radial_segments=20, arc_range=(0.0, 2.0 * math.pi)):
+def build_tube_mesh(centerline, radii, radial_segments=20, arc_range=(0.0, 2.0 * math.pi), scale_xz=(1.0, 1.0)):
     """
-    Constructs a smooth tubular or partial-shell 3D mesh along a 3D centerline
+    Constructs a smooth tubular or chamber-shell 3D mesh along a 3D centerline
     using parallel transport frames to prevent twisting singularities.
     """
     pts = np.asarray(centerline, dtype=np.float32)
@@ -147,11 +146,12 @@ def build_tube_mesh(centerline, radii, radial_segments=20, arc_range=(0.0, 2.0 *
     angles = np.linspace(arc_range[0], arc_range[1], radial_segments, endpoint=not full_circle)
     n_cols = len(angles)
 
+    sx, sz = scale_xz
     vertices = np.zeros((n_rings * n_cols, 3), dtype=np.float32)
     for i in range(n_rings):
         for j, theta in enumerate(angles):
             r = radii_arr[i]
-            radial_vec = math.cos(theta) * normals[i] + math.sin(theta) * binormals[i]
+            radial_vec = (sx * math.cos(theta)) * normals[i] + (sz * math.sin(theta)) * binormals[i]
             vertices[i * n_cols + j] = pts[i] + r * radial_vec
 
     indices = []
@@ -318,12 +318,10 @@ class CardiacAudioEngine:
         return self._to_stereo_sound(wave, volume=0.20)
 
     def _synthesize_breath_sound(self, duration=0.95, is_inhale=True):
-        """Synthesizes soft, realistic vesicular bronchial/alveolar airflow sound."""
         t = np.linspace(0.0, duration, int(self.sample_rate * duration), endpoint=False)
         rng = np.random.default_rng(404 if is_inhale else 505)
         white = rng.normal(0.0, 1.0, len(t))
 
-        # Band-pass / low-pass shaping for warm stethoscope vesicular breath
         k_size = 75 if is_inhale else 105
         kernel = np.hanning(k_size)
         kernel /= np.sum(kernel)
@@ -347,7 +345,6 @@ class CardiacAudioEngine:
                 return prev_p < target <= curr_p
             return prev_p < target or curr_p >= target
 
-        # Cardiac Valve Sounds
         if crossed(prev_c_phase, curr_c_phase, 0.14):
             self.s1_sound.play()
             self.active_sound_label = "S1: 'LUB' (AV Valves Close)"
@@ -361,7 +358,6 @@ class CardiacAudioEngine:
             self.active_sound_label = "S2: 'DUB' (Semilunar Close)"
             self.label_timer = 0.16
 
-        # Synchronized Respiratory Vesicular Breath Sounds
         if crossed(prev_r_phase, curr_r_phase, 0.03):
             self.inhale_sound.play()
         if crossed(prev_r_phase, curr_r_phase, 0.44):
@@ -374,13 +370,7 @@ class CardiacAudioEngine:
 
 class CardiopulmonaryEngine:
     """
-    Synchronizes the human Cardiac Cycle (72 BPM) and Respiratory Cycle (18 Breaths/min,
-    exact 4:1 physiological cardiopulmonary coupling with Respiratory Sinus Arrhythmia):
-      - Cardiac states: Atrial/Ventricular contraction, 4 valve openings, arterial pulse, apical twist.
-      - Respiratory states:
-          * Inspiration (resp_phase 0.00 - 0.42): Lungs expand radially & inferiorly, alveoli inflate, O2 rushes in.
-          * End-Inspiratory Pause (0.42 - 0.48): Peak alveolar gas exchange.
-          * Expiration (0.48 - 1.00): Lungs recoil smoothly, CO2 exhales up bronchial tree.
+    Synchronizes the human Cardiac Cycle (72 BPM) and Respiratory Cycle (18 Breaths/min).
     """
     def __init__(self, bpm=72.0, resp_rate=18.0):
         self.bpm = bpm
@@ -394,7 +384,6 @@ class CardiopulmonaryEngine:
         self.prev_resp_phase = 0.0
         self.resp_phase = 0.0
 
-        # Cardiac biomechanical parameters
         self.atrial_contraction = 0.0
         self.ventricular_contraction = 0.0
         self.arterial_pulse = 0.0
@@ -405,10 +394,9 @@ class CardiopulmonaryEngine:
         self.pulmonary_open = 0.0
         self.aortic_open = 0.0
 
-        # Respiratory biomechanical parameters
-        self.lung_inflation = 0.0       # [0..1] normalized tidal volume
-        self.airflow_velocity = 0.0     # >0 inspiration (downward), <0 expiration (upward)
-        self.alveolar_oxygen = 0.5      # [0..1] O2 saturation in alveoli
+        self.lung_inflation = 0.0
+        self.airflow_velocity = 0.0
+        self.alveolar_oxygen = 0.5
 
         self.phase_name = "Diastole (Passive Filling)"
         self.resp_phase_name = "Inspiration (Alveolar Filling)"
@@ -448,11 +436,9 @@ class CardiopulmonaryEngine:
         self.prev_resp_phase = self.resp_phase
         self.time += dt
 
-        # 1. Respiratory Cycle Update
         self.resp_phase = (self.time % self.resp_period) / self.resp_period
         rp = self.resp_phase
 
-        # Smooth physiological lung volume curve (Inspiration 0..0.44, Pause 0.44..0.48, Expiration 0.48..1.0)
         if rp < 0.44:
             u = rp / 0.44
             self.lung_inflation = 0.5 * (1.0 - math.cos(u * math.pi))
@@ -470,7 +456,6 @@ class CardiopulmonaryEngine:
 
         self.alveolar_oxygen = 0.35 + 0.65 * self.lung_inflation
 
-        # 2. Cardiac Cycle Update
         self.phase = (self.time % self.cardiac_period) / self.cardiac_period
         p = self.phase
 
@@ -496,9 +481,8 @@ class CardiopulmonaryEngine:
         else:
             self.arterial_pulse = 0.0
 
-        self.apical_twist = 0.22 * self.ventricular_contraction
+        self.apical_twist = 0.18 * self.ventricular_contraction
 
-        # Atrioventricular Valves (Tricuspid & Mitral)
         if p < 0.13:
             av_open = 0.82 + 0.18 * math.sin((p / 0.13) * math.pi)
         elif p < 0.175:
@@ -515,7 +499,6 @@ class CardiopulmonaryEngine:
         self.tricuspid_open = float(np.clip(av_open, 0.0, 1.0))
         self.mitral_open = float(np.clip(av_open, 0.0, 1.0))
 
-        # Semilunar Valves (Pulmonary & Aortic)
         sl_open = cosine_window(p, 0.185, 0.23, 0.44, 0.49)
         self.pulmonary_open = float(np.clip(sl_open, 0.0, 1.0))
         self.aortic_open = float(np.clip(sl_open, 0.0, 1.0))
@@ -548,69 +531,79 @@ class CardiopulmonaryEngine:
 
 
 # =============================================================================
-# UNIFIED CARDIOPULMONARY DEFORMATION & VIEW-DEPENDENT TRANSPARENCY ENGINE
+# SYNCHRONIZED CARDIOPULMONARY DEFORMATION & FRESNEL X-RAY SHADING ENGINE
 # =============================================================================
 
 def deform_points_direct(pts, cycle: CardiopulmonaryEngine):
     """
-    Deforms an array of 3D points across both the Heart (central mediastinum)
-    and Lungs (lateral thoracic cavities) simultaneously.
+    Applies identical, anatomically matched biomechanics to landmark points
+    (valves, papillary tips, blood cells, and airway particles) as FastDeformableBatch:
+      - Ventricular Cone (y < 0.24): radial contraction toward the tilted interventricular
+        axis, apical longitudinal shortening, and counter-clockwise apical twist.
+      - Atrial Chambers (0.24 <= y < 1.18): localized contraction around the true anatomical
+        centers of the Right Atrium (-0.82, 0.68, 0.04) and Left Atrium (+0.72, 0.72, -0.24).
+      - Great Vessels (y >= 0.90): pulsatile systolic radial dilation.
+      - Lungs (|x| >= 1.25): lateral, anterior, and diaphragmatic expansion.
     """
     v = pts.copy()
     x, y, z = v[:, 0], v[:, 1], v[:, 2]
 
-    # Separate cardiac mediastinal zone (|x| < 1.25) from lateral pulmonary zones (|x| >= 1.25)
-    cardiac_zone = smoothstep01((1.42 - np.abs(x)) / 0.45)
+    cardiac_zone = smoothstep01((1.40 - np.abs(x)) / 0.42)
     lung_zone = 1.0 - cardiac_zone
 
-    # --- A. Cardiac Deformation ---
-    v_mask = smoothstep01((0.40 - y) / 1.85) * cardiac_zone
+    # --- A. Ventricular Contraction (below the AV valve plane y = 0.24) ---
+    v_mask = smoothstep01((0.24 - y) / 1.75) * cardiac_zone
     vc = cycle.ventricular_contraction
 
-    vent_center_x = 0.12 * (0.3 - y)
-    vent_center_z = 0.08
-    dx_v = x - vent_center_x
-    dz_v = z - vent_center_z
+    apex_t = np.clip((0.24 - y) / 1.95, 0.0, 1.0)
+    vent_cx = 0.56 * (apex_t ** 1.35)
+    vent_cz = 0.24 * (apex_t ** 1.35)
 
-    squeeze = 1.0 - 0.24 * vc * v_mask
-    x_c = vent_center_x + dx_v * squeeze
-    z_c = vent_center_z + dz_v * squeeze
-    y_c = y + 0.22 * vc * (v_mask ** 1.4)
+    dx_v = x - vent_cx
+    dz_v = z - vent_cz
 
-    twist_angle = cycle.apical_twist * (v_mask ** 1.3)
+    squeeze = 1.0 - 0.22 * vc * v_mask
+    x_c = vent_cx + dx_v * squeeze
+    z_c = vent_cz + dz_v * squeeze
+    y_c = y + 0.18 * vc * (v_mask ** 1.35)
+
+    twist_angle = cycle.apical_twist * (v_mask ** 1.25)
     cos_t = np.cos(twist_angle)
     sin_t = np.sin(twist_angle)
-    rx = x_c - vent_center_x
-    rz = z_c - vent_center_z
-    x_c = vent_center_x + rx * cos_t - rz * sin_t
-    z_c = vent_center_z + rx * sin_t + rz * cos_t
+    rx = x_c - vent_cx
+    rz = z_c - vent_cz
+    x_c = vent_cx + rx * cos_t - rz * sin_t
+    z_c = vent_cz + rx * sin_t + rz * cos_t
 
-    a_mask = np.exp(-((y - 0.78) / 0.42) ** 2) * cardiac_zone
+    # --- B. Atrial Contraction (centered on true RA and LA chambers) ---
+    a_mask = np.exp(-((y - 0.70) / 0.36) ** 2) * cardiac_zone
     ac = cycle.atrial_contraction
-    ra_dist = np.exp(-((x + 1.10) ** 2 + (z - 0.05) ** 2) / 0.95)
-    la_dist = np.exp(-((x - 0.85) ** 2 + (z + 0.35) ** 2) / 0.95)
+    ra_dist = np.exp(-((x + 0.82) ** 2 + (z - 0.04) ** 2) / 0.65)
+    la_dist = np.exp(-((x - 0.72) ** 2 + (z + 0.24) ** 2) / 0.65)
 
-    atrial_pull_ra = 0.22 * ac * a_mask * ra_dist
-    atrial_pull_la = 0.22 * ac * a_mask * la_dist
+    pull_ra = 0.22 * ac * a_mask * ra_dist
+    pull_la = 0.22 * ac * a_mask * la_dist
 
-    x_c = x_c - atrial_pull_ra * (x_c + 1.10) - atrial_pull_la * (x_c - 0.85)
-    y_c = y_c - 0.12 * ac * a_mask * (ra_dist + la_dist) * (y_c - 0.65)
-    z_c = z_c - atrial_pull_ra * (z_c - 0.05) - atrial_pull_la * (z_c + 0.35)
+    x_c = x_c - pull_ra * (x_c + 0.82) - pull_la * (x_c - 0.72)
+    y_c = y_c - 0.11 * ac * a_mask * (ra_dist + la_dist) * (y_c - 0.60)
+    z_c = z_c - pull_ra * (z_c - 0.04) - pull_la * (z_c + 0.24)
 
-    art_mask = np.clip((y - 0.85) / 1.2, 0.0, 1.0) * cardiac_zone
+    # --- C. Great Arterial Pulse Wave (for superior vessels y > 0.90) ---
+    art_mask = smoothstep01((y - 0.90) / 0.95) * cardiac_zone
     ap = cycle.arterial_pulse
-    scale_art = 1.0 + 0.06 * ap * art_mask
+    scale_art = 1.0 + 0.055 * ap * art_mask
     x_c = x_c * scale_art
     z_c = z_c * scale_art
 
-    # --- B. Pulmonary Respiratory Expansion (for points inside Lungs) ---
+    # --- D. Pulmonary Respiratory Expansion (for lateral lung regions) ---
     infl = cycle.lung_inflation
     sign_x = np.where(x >= 0.0, 1.0, -1.0)
     lung_hilum_x = sign_x * 1.15
-    # Lateral, anterior-posterior, and inferior diaphragmatic expansion
     inf_weight = smoothstep01((1.65 - y) / 3.4) * lung_zone
+    sup_weight = smoothstep01((y - 0.50) / 1.8) * lung_zone
+
     x_l = x_c + (x - lung_hilum_x) * (0.14 * infl * lung_zone)
-    y_l = y_c - 0.26 * infl * (inf_weight ** 1.2) + 0.05 * infl * lung_zone * smoothstep01((y - 0.5) / 1.8)
+    y_l = y_c - 0.26 * infl * (inf_weight ** 1.2) + 0.05 * infl * sup_weight
     z_l = z_c + z * (0.16 * infl * lung_zone) + 0.04 * infl * lung_zone
 
     v[:, 0] = x_l
@@ -621,12 +614,13 @@ def deform_points_direct(pts, cycle: CardiopulmonaryEngine):
 
 class FastDeformableBatch:
     """
-    High-performance vectorized mesh batch supporting:
-      1. Cardiac + Respiratory biomechanical deformation in <0.15 ms.
-      2. Dynamic View-Dependent Transparency:
-         Computes per-vertex camera facing dot(N_world, V_cam) every frame AND renders
-         in two passes (Backside first with higher opacity, Frontside second with ultra-low
-         opacity) so whichever side faces the camera is ALWAYS more transparent than the backside!
+    Precomputes spatial deformation weights and applies a Fresnel Rim-Lit X-Ray
+    optical shader:
+      - Surfaces facing directly toward/away from the camera (center of chambers)
+        open a clear low-alpha window (alpha ~ 0.10 - 0.15) into the valves & blood.
+      - Surfaces at grazing angles (3D outer silhouette, chamber walls, myocardial
+        thickness, sulci) ramp up to rich opacity (alpha ~ 0.65 - 0.80) with a warm
+        rim highlight so the heart's shape, atria, and ventricles are always bold!
     """
     def __init__(self, mesh_list, is_translucent=False):
         verts_all = []
@@ -652,46 +646,45 @@ class FastDeformableBatch:
         self.base_verts = np.vstack(verts_all).astype(np.float32)
         self.base_norms = np.vstack(norms_all).astype(np.float32)
         self.base_colors = np.vstack(cols_all).astype(np.float32)
+        self.base_rgb = self.base_colors[:, :3].copy()
         self.base_alpha = self.base_colors[:, 3].copy()
         self.indices = np.concatenate(indices_all).astype(np.uint32)
         self.is_translucent = is_translucent
 
-        # Separate front-pass and back-pass color buffers for directional transparency
         self.colors_back_pass = self.base_colors.copy()
         self.colors_front_pass = self.base_colors.copy()
 
-        # Precompute spatial deformation weights once
         x = self.base_verts[:, 0]
         y = self.base_verts[:, 1]
         z = self.base_verts[:, 2]
 
-        self.cardiac_zone = smoothstep01((1.42 - np.abs(x)) / 0.45).astype(np.float32)
+        self.cardiac_zone = smoothstep01((1.40 - np.abs(x)) / 0.42).astype(np.float32)
         self.lung_zone = (1.0 - self.cardiac_zone).astype(np.float32)
 
-        self.v_mask = (smoothstep01((0.40 - y) / 1.85) * self.cardiac_zone).astype(np.float32)
-        self.v_squeeze_factor = (0.24 * self.v_mask).astype(np.float32)
-        self.v_lift_factor = (0.22 * (self.v_mask ** 1.4)).astype(np.float32)
-        self.v_twist_factor = (self.v_mask ** 1.3).astype(np.float32)
+        self.v_mask = (smoothstep01((0.24 - y) / 1.75) * self.cardiac_zone).astype(np.float32)
+        self.v_squeeze_factor = (0.22 * self.v_mask).astype(np.float32)
+        self.v_lift_factor = (0.18 * (self.v_mask ** 1.35)).astype(np.float32)
+        self.v_twist_factor = (self.v_mask ** 1.25).astype(np.float32)
 
-        self.vent_cx = (0.12 * (0.3 - y)).astype(np.float32)
-        self.vent_cz = np.float32(0.08)
+        apex_t = np.clip((0.24 - y) / 1.95, 0.0, 1.0)
+        self.vent_cx = (0.56 * (apex_t ** 1.35)).astype(np.float32)
+        self.vent_cz = (0.24 * (apex_t ** 1.35)).astype(np.float32)
         self.dx_v = (x - self.vent_cx).astype(np.float32)
         self.dz_v = (z - self.vent_cz).astype(np.float32)
 
-        a_mask = np.exp(-((y - 0.78) / 0.42) ** 2) * self.cardiac_zone
-        ra_dist = np.exp(-((x + 1.10) ** 2 + (z - 0.05) ** 2) / 0.95)
-        la_dist = np.exp(-((x - 0.85) ** 2 + (z + 0.35) ** 2) / 0.95)
+        a_mask = np.exp(-((y - 0.70) / 0.36) ** 2) * self.cardiac_zone
+        ra_dist = np.exp(-((x + 0.82) ** 2 + (z - 0.04) ** 2) / 0.65)
+        la_dist = np.exp(-((x - 0.72) ** 2 + (z + 0.24) ** 2) / 0.65)
 
         self.ra_weight = (0.22 * a_mask * ra_dist).astype(np.float32)
         self.la_weight = (0.22 * a_mask * la_dist).astype(np.float32)
-        self.ay_weight = (0.12 * a_mask * (ra_dist + la_dist)).astype(np.float32)
-        self.art_weight = (0.06 * np.clip((y - 0.85) / 1.2, 0.0, 1.0) * self.cardiac_zone).astype(np.float32)
+        self.ay_weight = (0.11 * a_mask * (ra_dist + la_dist)).astype(np.float32)
+        self.art_weight = (0.055 * smoothstep01((y - 0.90) / 0.95) * self.cardiac_zone).astype(np.float32)
 
-        # Precompute pulmonary respiratory expansion weights
         sign_x = np.where(x >= 0.0, 1.0, -1.0).astype(np.float32)
         lung_hilum_x = sign_x * 1.15
         inf_weight = smoothstep01((1.65 - y) / 3.4) * self.lung_zone
-        sup_weight = smoothstep01((y - 0.5) / 1.8) * self.lung_zone
+        sup_weight = smoothstep01((y - 0.50) / 1.8) * self.lung_zone
 
         self.lung_dx = ((x - lung_hilum_x) * 0.14 * self.lung_zone).astype(np.float32)
         self.lung_dy = (-0.26 * (inf_weight ** 1.2) + 0.05 * sup_weight).astype(np.float32)
@@ -722,9 +715,9 @@ class FastDeformableBatch:
         pull_ra = ac * self.ra_weight
         pull_la = ac * self.la_weight
 
-        x_new = x_new - pull_ra * (x_new + 1.10) - pull_la * (x_new - 0.85)
-        y_new = y_new - ac * self.ay_weight * (y_new - 0.65)
-        z_new = z_new - pull_ra * (z_new - 0.05) - pull_la * (z_new + 0.35)
+        x_new = x_new - pull_ra * (x_new + 0.82) - pull_la * (x_new - 0.72)
+        y_new = y_new - ac * self.ay_weight * (y_new - 0.60)
+        z_new = z_new - pull_ra * (z_new - 0.04) - pull_la * (z_new + 0.24)
 
         art_scale = 1.0 + ap * self.art_weight
         x_new = x_new * art_scale + infl * self.lung_dx
@@ -742,24 +735,30 @@ class FastDeformableBatch:
         self.cur_norms[:, 1] = ny
         self.cur_norms[:, 2] = nx * sin_t + nz * cos_t
 
-        # Dynamic View-Dependent Front-vs-Back Alpha Modulation
+        # Fresnel Rim-Lit X-Ray Shader:
+        # Center of camera-facing walls = clear window; Edges & Chamber Contours = rich & solid-looking!
         if self.is_translucent and cam_view_dir is not None:
-            # facing = dot(N, V_cam): +1 when directly facing camera (frontside), -1 when facing away (backside)
-            facing = (
+            abs_dot = np.abs(
                 self.cur_norms[:, 0] * cam_view_dir[0]
                 + self.cur_norms[:, 1] * cam_view_dir[1]
                 + self.cur_norms[:, 2] * cam_view_dir[2]
             )
-            front_align = np.clip(facing, 0.0, 1.0)
-            back_align = np.clip(-facing, 0.0, 1.0)
+            rim = np.clip(1.0 - abs_dot, 0.0, 1.0)
+            rim_curve = rim ** 1.45
 
-            # Backside surface (away from camera): richer, more opaque cradle (up to 2.25x base_alpha)
+            # Boost RGB slightly on silhouette rims so chambers & sulci pop in 3D
+            rim_boost = (0.18 * rim_curve)[:, None]
+            boosted_rgb = np.clip(self.base_rgb + rim_boost, 0.0, 1.0)
+            self.colors_back_pass[:, :3] = boosted_rgb
+            self.colors_front_pass[:, :3] = boosted_rgb
+
+            # Backside pass: visible anatomical cradle (0.24 at center -> 0.72 at rim)
             self.colors_back_pass[:, 3] = np.clip(
-                self.base_alpha * (1.35 + 0.90 * back_align), 0.05, 0.68
+                self.base_alpha * (0.78 + 1.55 * rim_curve), 0.14, 0.78
             )
-            # Frontside surface (closest to camera): ultra-transparent window (down to 0.18x base_alpha at center)
+            # Frontside pass: clear X-ray window at center (0.09 at center -> 0.65 at rim)
             self.colors_front_pass[:, 3] = np.clip(
-                self.base_alpha * (0.72 - 0.56 * (front_align ** 0.75)), 0.03, 0.35
+                self.base_alpha * (0.30 + 1.45 * rim_curve), 0.07, 0.68
             )
 
     def draw_opaque(self, shininess=36.0):
@@ -778,10 +777,6 @@ class FastDeformableBatch:
         glDisableClientState(GL_VERTEX_ARRAY)
 
     def draw_translucent_pass(self, is_front_pass=False, shininess=52.0):
-        """
-        Renders either the Backside pass (more opaque) or the Frontside pass
-        (more transparent) for view-angle-independent clarity.
-        """
         glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, shininess)
         glEnableClientState(GL_VERTEX_ARRAY)
         glEnableClientState(GL_NORMAL_ARRAY)
@@ -804,17 +799,18 @@ class FastDeformableBatch:
 
 class CardiopulmonaryAnatomyModel:
     """
-    Constructs the complete 3D Cardiopulmonary Anatomy with separate toggleable
-    Heart and Lung batches:
-      1. Solid Inner Cardiac Anatomy: Septum, Chamber Cradles, Trabeculae, Papillary Muscles.
-      2. Solid Inner Pulmonary Airway Tree: Trachea + Cartilaginous Rings, Carina, Left/Right
-         Main Bronchi, Lobar & Segmental Bronchi, and 36 Alveolar Acinar Sac Clusters.
-      3. View-Dependent Translucent Vessels: Aorta, Venae Cavae, Pulmonary Trunk, Left/Right
-         Pulmonary Arteries + Intrapulmonary Arterioles, 4 Pulmonary Veins + Venules, Coronaries.
-      4. View-Dependent Translucent Organ Shells:
-         - Outer Heart Epicardium / Myocardium
-         - Right Lung (Superior, Middle, Inferior Lobes with Horizontal & Oblique Fissures)
-         - Left Lung (Superior & Inferior Lobes with Oblique Fissure, Lingula & Cardiac Notch)
+    Constructs a 3-Layer Anatomical Heart + Lungs System:
+      1. SOLID OPAQUE CORE SKELETON (Crux Cordis):
+         - Muscular Interventricular Septum (dividing RV & LV)
+         - Interatrial Septum (dividing RA & LA)
+         - Horizontal Atrioventricular Fibrous Skeleton Ring (dividing Atria & Ventricles)
+         - Septal Trabeculae Carneae, Moderator Band & 5 Conical Papillary Muscles
+         - Epicardial Coronary Artery & Cardiac Vein Network (framing the outer surface)
+      2. 4 DISTINCT TRANSLUCENT ENDOCARDIAL CHAMBERS (Fresnel X-Ray Shaded):
+         - Right Atrium (RA), Left Atrium (LA), Right Ventricle (RV), Left Ventricle (LV)
+      3. TRANSLUCENT OUTER EPICARDIAL SHELL & LUNGS (Fresnel X-Ray Shaded):
+         - Shows true myocardial wall thickness around the 4 chambers while keeping
+           the center facing your camera open like a window!
     """
     def __init__(self):
         self.papillary_anchors = []
@@ -822,8 +818,11 @@ class CardiopulmonaryAnatomyModel:
         self._build_all_geometry()
 
     def _build_outer_epicardial_shell(self):
-        n_lat = 50
-        n_lon = 64
+        """
+        Builds the outer epicardial/myocardial surface of the conical heart.
+        """
+        n_lat = 56
+        n_lon = 68
         u = np.linspace(0.02, math.pi - 0.02, n_lat)
         v = np.linspace(0.0, 2.0 * math.pi, n_lon, endpoint=False)
 
@@ -832,24 +831,31 @@ class CardiopulmonaryAnatomyModel:
             cos_p = math.cos(phi)
             sin_p = math.sin(phi)
 
+            if cos_p >= 0.35:
+                t_top = (cos_p - 0.35) / 0.65
+                r_env = 1.26 * math.sqrt(max(0.02, 1.0 - (t_top ** 2.2)))
+            else:
+                t_bot = (0.35 - cos_p) / 1.35
+                r_env = 1.26 * ((1.0 - (t_bot ** 1.45)) ** 0.62)
+
             for j, theta in enumerate(v):
-                r_base = 1.48 * sin_p * (1.0 + 0.18 * cos_p - 0.12 * (cos_p ** 2))
-                iv_groove_ant = -0.14 * math.exp(-((theta - 1.38) / 0.32) ** 2) * (sin_p ** 1.5)
-                iv_groove_post = -0.11 * math.exp(-((theta - 4.55) / 0.35) ** 2) * (sin_p ** 1.5)
-                av_sulcus = -0.15 * math.exp(-((cos_p - 0.34) / 0.16) ** 2)
-                ra_bulge = 0.28 * math.exp(-((cos_p - 0.58) / 0.28) ** 2) * math.exp(-((theta - 2.85) / 0.65) ** 2)
-                la_bulge = 0.25 * math.exp(-((cos_p - 0.60) / 0.28) ** 2) * math.exp(-((theta - 5.80) / 0.65) ** 2)
-                lv_bulge = 0.22 * math.exp(-((cos_p + 0.18) / 0.55) ** 2) * math.exp(-((theta - 0.35) / 0.85) ** 2)
+                iv_groove_ant = -0.12 * math.exp(-((theta - 1.35) / 0.28) ** 2) * (sin_p ** 1.3)
+                iv_groove_post = -0.10 * math.exp(-((theta - 4.55) / 0.30) ** 2) * (sin_p ** 1.3)
+                av_sulcus = -0.16 * math.exp(-((cos_p - 0.35) / 0.12) ** 2)
 
-                r = r_base + iv_groove_ant + iv_groove_post + av_sulcus + ra_bulge + la_bulge + lv_bulge
+                ra_auricle = 0.25 * math.exp(-((cos_p - 0.64) / 0.22) ** 2) * math.exp(-((theta - 2.95) / 0.55) ** 2)
+                la_auricle = 0.23 * math.exp(-((cos_p - 0.66) / 0.22) ** 2) * math.exp(-((theta - 5.95) / 0.55) ** 2)
+                lv_curve = 0.18 * math.exp(-((cos_p + 0.10) / 0.48) ** 2) * math.exp(-((theta - 0.25) / 0.75) ** 2)
 
-                x = r * math.cos(theta) * 1.12
-                z = r * math.sin(theta) * 0.86
-                y = 1.38 * cos_p - 0.35
+                r = max(0.04, r_env + iv_groove_ant + iv_groove_post + av_sulcus + ra_auricle + la_auricle + lv_curve)
 
-                apex_factor = max(0.0, (0.55 - cos_p) / 1.55) ** 1.35
-                x += 0.62 * apex_factor
-                z += 0.28 * apex_factor
+                x = r * math.cos(theta) * 1.08
+                z = r * math.sin(theta) * 0.84
+                y = 1.36 * cos_p - 0.24
+
+                apex_t = max(0.0, (0.35 - cos_p) / 1.35) ** 1.35
+                x += 0.56 * apex_t
+                z += 0.24 * apex_t
 
                 vertices[i * n_lon + j] = [x, y, z]
 
@@ -878,13 +884,181 @@ class CardiopulmonaryAnatomyModel:
 
         indices = np.array(indices, dtype=np.uint32)
         normals = compute_vertex_normals(vertices, indices)
-        return (vertices, normals, indices, (0.88, 0.22, 0.28, 0.20))
+        # Base alpha 0.30 -> Fresnel shader makes center ~0.09 (clear window) & edges ~0.66 (bold 3D contour!)
+        return (vertices, normals, indices, (0.92, 0.20, 0.26, 0.30))
+
+    def _build_four_endocardial_chambers(self):
+        """
+        Builds 4 distinct, anatomically sculpted 3D endocardial chamber capsules
+        (Right Atrium, Left Atrium, Right Ventricle, Left Ventricle) inside the
+        outer heart shell so the viewer clearly sees all 4 chambers and the
+        surrounding myocardial wall thickness!
+        """
+        chambers = []
+
+        # 1. RIGHT ATRIUM (RA) Endocardial Chamber (Superior Right, receives SVC & IVC)
+        ra_pts = catmull_rom_spline([
+            [-0.95, 1.02, -0.02],
+            [-0.86, 0.72,  0.04],
+            [-0.76, 0.44,  0.10],
+            [-0.64, 0.24,  0.14],
+        ], num_samples=22)
+        ra_rad = np.interp(np.linspace(0, 1, 22), [0.0, 0.45, 0.85, 1.0], [0.24, 0.46, 0.40, 0.28])
+        v_ra, n_ra, i_ra = build_tube_mesh(ra_pts, ra_rad, radial_segments=22, scale_xz=(0.95, 1.05))
+        chambers.append((v_ra, n_ra, i_ra, (0.58, 0.22, 0.44, 0.32)))
+
+        # 2. LEFT ATRIUM (LA) Endocardial Chamber (Superior Left-Posterior, receives 4 PVs)
+        la_pts = catmull_rom_spline([
+            [ 0.78, 1.00, -0.28],
+            [ 0.74, 0.74, -0.22],
+            [ 0.68, 0.46, -0.16],
+            [ 0.62, 0.26, -0.10],
+        ], num_samples=22)
+        la_rad = np.interp(np.linspace(0, 1, 22), [0.0, 0.45, 0.85, 1.0], [0.22, 0.44, 0.38, 0.27])
+        v_la, n_la, i_la = build_tube_mesh(la_pts, la_rad, radial_segments=22, scale_xz=(1.02, 0.92))
+        chambers.append((v_la, n_la, i_la, (0.88, 0.24, 0.32, 0.32)))
+
+        # 3. RIGHT VENTRICLE (RV) Endocardial Chamber (Inflow from Tricuspid -> RV Belly -> Infundibulum to Pulmonary Valve)
+        rv_pts = catmull_rom_spline([
+            [-0.64,  0.22,  0.14],  # Tricuspid orifice
+            [-0.72, -0.35,  0.20],  # RV inflow belly
+            [-0.52, -0.96,  0.22],  # RV apical floor
+            [-0.22, -1.18,  0.24],  # RV lower turn
+            [-0.18, -0.42,  0.34],  # RV outflow tract (conus arteriosus)
+            [-0.22,  0.74,  0.42],  # Pulmonary valve orifice
+        ], num_samples=36)
+        rv_rad = np.interp(
+            np.linspace(0, 1, 36),
+            [0.0, 0.25, 0.55, 0.75, 1.0],
+            [0.29, 0.44, 0.36, 0.30, 0.23]
+        )
+        v_rv, n_rv, i_rv = build_tube_mesh(rv_pts, rv_rad, radial_segments=22, scale_xz=(0.88, 1.08))
+        chambers.append((v_rv, n_rv, i_rv, (0.66, 0.18, 0.28, 0.34)))
+
+        # 4. LEFT VENTRICLE (LV) Endocardial Chamber (Inflow from Mitral -> Thick Conical LV Apex -> Aortic Outflow)
+        lv_pts = catmull_rom_spline([
+            [ 0.62,  0.24, -0.10],  # Mitral orifice
+            [ 0.72, -0.38,  0.02],  # LV mid-cavity
+            [ 0.66, -1.05,  0.14],  # LV lower body
+            [ 0.54, -1.48,  0.22],  # LV luminal apex (inside the thicker outer epicardial apex!)
+            [ 0.34, -0.58,  0.10],  # LV outflow tract
+            [ 0.18,  0.52,  0.02],  # Aortic valve orifice
+        ], num_samples=36)
+        lv_rad = np.interp(
+            np.linspace(0, 1, 36),
+            [0.0, 0.25, 0.55, 0.75, 1.0],
+            [0.28, 0.45, 0.34, 0.28, 0.24]
+        )
+        v_lv, n_lv, i_lv = build_tube_mesh(lv_pts, lv_rad, radial_segments=22, scale_xz=(0.95, 0.95))
+        chambers.append((v_lv, n_lv, i_lv, (0.86, 0.15, 0.20, 0.34)))
+
+        return chambers
+
+    def _build_solid_core_skeleton(self):
+        """
+        Builds the 100% OPAQUE SOLID INTERNAL CORE of the heart:
+          1. Muscular Interventricular Septum (thick blade dividing RV and LV)
+          2. Interatrial Septum (dividing RA and LA)
+          3. Horizontal Atrioventricular Fibrous Skeleton / Crux Cordis (dividing Atria above from Ventricles below)
+          4. Septal Trabeculae Carneae & Moderator Band (muscular beams inside the ventricles)
+          5. 5 Conical Papillary Muscles
+        """
+        core_meshes = []
+
+        # 1. Muscular Interventricular Septum (y from +0.28 down to -1.54)
+        iv_septum_pts = catmull_rom_spline([
+            [ 0.00,  0.28, -0.02],
+            [ 0.06, -0.25,  0.06],
+            [ 0.22, -0.88,  0.14],
+            [ 0.48, -1.52,  0.22],
+        ], num_samples=28)
+        iv_rad = np.interp(np.linspace(0, 1, 28), [0.0, 0.3, 0.7, 1.0], [0.34, 0.42, 0.36, 0.16])
+        v_ivs, n_ivs, i_ivs = build_tube_mesh(iv_septum_pts, iv_rad, radial_segments=24, scale_xz=(0.42, 1.45))
+        core_meshes.append((v_ivs, n_ivs, i_ivs, (0.72, 0.15, 0.19, 1.0)))
+
+        # 2. Interatrial Septum (y from +0.24 up to +0.98 between RA and LA)
+        ia_septum_pts = catmull_rom_spline([
+            [-0.04, 0.98, -0.14],
+            [-0.02, 0.62, -0.08],
+            [ 0.00, 0.24, -0.02],
+        ], num_samples=18)
+        ia_rad = np.interp(np.linspace(0, 1, 18), [0.0, 0.5, 1.0], [0.18, 0.30, 0.28])
+        v_ias, n_ias, i_ias = build_tube_mesh(ia_septum_pts, ia_rad, radial_segments=20, scale_xz=(0.35, 1.35))
+        core_meshes.append((v_ias, n_ias, i_ias, (0.78, 0.24, 0.28, 1.0)))
+
+        # 3. Horizontal Atrioventricular Fibrous Skeleton Bridge (Crux Cordis at y = 0.24)
+        av_bridge_pts = catmull_rom_spline([
+            [-0.95, 0.24,  0.10],
+            [-0.32, 0.24,  0.04],
+            [ 0.00, 0.25, -0.02],
+            [ 0.32, 0.25, -0.06],
+            [ 0.92, 0.26, -0.08],
+        ], num_samples=22)
+        av_rad = np.interp(np.linspace(0, 1, 22), [0.0, 0.5, 1.0], [0.07, 0.13, 0.07])
+        v_avb, n_avb, i_avb = build_tube_mesh(av_bridge_pts, av_rad, radial_segments=14, scale_xz=(1.0, 1.8))
+        core_meshes.append((v_avb, n_avb, i_avb, (0.86, 0.76, 0.68, 1.0)))
+
+        # 4. Septal Trabeculae Carneae & Right Ventricular Moderator Band (Septomarginal Trabecula)
+        trabeculae_specs = [
+            # Moderator band (bridges lower interventricular septum to anterior RV papillary base)
+            ([[ 0.14, -0.68,  0.12], [-0.28, -0.82,  0.22], [-0.68, -0.82,  0.26]], 0.055),
+            # RV & LV Septal muscular ridges
+            ([[ 0.02, -0.15,  0.22], [-0.15, -0.65,  0.28], [-0.35, -1.12,  0.24]], 0.052),
+            ([[ 0.02, -0.18, -0.16], [-0.22, -0.72, -0.12], [-0.45, -1.02,  0.05]], 0.050),
+            ([[ 0.12, -0.15,  0.18], [ 0.35, -0.75,  0.22], [ 0.52, -1.38,  0.22]], 0.058),
+            ([[ 0.12, -0.20, -0.18], [ 0.38, -0.82, -0.14], [ 0.52, -1.35,  0.08]], 0.055),
+        ]
+        for pts, rad in trabeculae_specs:
+            curve = catmull_rom_spline(pts, num_samples=14)
+            vt, nt, it = build_tube_mesh(curve, rad, radial_segments=10)
+            core_meshes.append((vt, nt, it, (0.75, 0.16, 0.21, 1.0)))
+
+        # 5. Five Solid Conical Papillary Muscles
+        pap_specs = [
+            {"base": np.array([-0.68, -0.82,  0.26]), "tip": np.array([-0.64, -0.24,  0.20]), "valve": "tricuspid", "leaf_idx": 0},
+            {"base": np.array([-0.52, -0.96, -0.08]), "tip": np.array([-0.58, -0.26,  0.00]), "valve": "tricuspid", "leaf_idx": 1},
+            {"base": np.array([-0.14, -0.85,  0.14]), "tip": np.array([-0.38, -0.22,  0.14]), "valve": "tricuspid", "leaf_idx": 2},
+            {"base": np.array([ 0.82, -0.95,  0.10]), "tip": np.array([ 0.68, -0.24, -0.02]), "valve": "mitral", "leaf_idx": 0},
+            {"base": np.array([ 0.52, -1.04, -0.22]), "tip": np.array([ 0.56, -0.26, -0.20]), "valve": "mitral", "leaf_idx": 1},
+        ]
+        self.papillary_anchors = []
+        for sp in pap_specs:
+            curve = catmull_rom_spline([
+                sp["base"],
+                0.5 * (sp["base"] + sp["tip"]) + np.array([0.0, 0.03, 0.02]),
+                sp["tip"]
+            ], num_samples=12)
+            radii = np.linspace(0.115, 0.042, 12)
+            vp, np_norm, ip = build_tube_mesh(curve, radii, radial_segments=12)
+            core_meshes.append((vp, np_norm, ip, (0.78, 0.18, 0.23, 1.0)))
+            self.papillary_anchors.append(sp)
+
+        # 6. Solid Epicardial Coronary Arteries & Cardiac Veins (gives crisp 3D surface landmarks!)
+        cor_artery_col = (0.92, 0.14, 0.18, 1.0)
+        cor_vein_col = (0.18, 0.42, 0.92, 1.0)
+        cor_specs = [
+            # LAD (Left Anterior Descending) in the Anterior Interventricular Sulcus
+            ([[ 0.22, 0.56, 0.14], [ 0.10, 0.28, 0.62], [ 0.16, -0.32, 0.74], [ 0.34, -0.98, 0.62], [ 0.52, -1.55, 0.38]], 0.040, 0.016, cor_artery_col),
+            # Diagonal branch across anterior LV wall
+            ([[ 0.16, -0.25, 0.73], [ 0.56, -0.58, 0.64], [ 0.82, -1.02, 0.42]], 0.030, 0.014, cor_artery_col),
+            # Left Circumflex (LCX) in the left Coronary Sulcus
+            ([[ 0.22, 0.56, 0.14], [ 0.78, 0.32, 0.26], [ 1.12, 0.14, -0.14], [ 0.92, -0.35, -0.48]], 0.038, 0.016, cor_artery_col),
+            # Right Coronary Artery (RCA) in the right Coronary Sulcus
+            ([[ 0.08, 0.54, 0.18], [-0.48, 0.28, 0.54], [-0.98, -0.05, 0.32], [-0.90, -0.50, -0.22], [-0.38, -0.90, -0.48]], 0.038, 0.016, cor_artery_col),
+            # Great Cardiac Vein
+            ([[ 0.44, -1.48, 0.42], [ 0.22, -0.88, 0.66], [ 0.06, -0.22, 0.75], [ 0.65, 0.26, 0.35], [ 1.05, 0.18, -0.20]], 0.016, 0.035, cor_vein_col),
+        ]
+        for pts, r0, r1, col in cor_specs:
+            cc = catmull_rom_spline(pts, num_samples=24)
+            cr = np.linspace(r0, r1, 24)
+            vc, nc, ic = build_tube_mesh(cc, cr, radial_segments=10)
+            core_meshes.append((vc, nc, ic, col))
+
+        return core_meshes
 
     def _build_lung_shell(self, is_right_lung=True):
         """
-        Builds a detailed anatomical Right Lung (3 lobes: Superior, Middle, Inferior
-        with Horizontal & Oblique Fissures) or Left Lung (2 lobes: Superior & Inferior
-        with Oblique Fissure, Lingula, and a deep Cardiac Notch around the heart apex).
+        Builds anatomical Right Lung (3 lobes) and Left Lung (2 lobes + Cardiac Notch).
         """
         n_lat = 54
         n_lon = 64
@@ -896,28 +1070,23 @@ class CardiopulmonaryAnatomyModel:
 
         vertices = np.zeros((n_lat * n_lon, 3), dtype=np.float32)
         for i, phi in enumerate(u):
-            cos_p = math.cos(phi)  # +1 at lung apex, -1 at diaphragmatic base
+            cos_p = math.cos(phi)
             sin_p = math.sin(phi)
             y = 1.95 * cos_p + 0.12
 
-            # Dome-shaped superior apex tapering & broad flat diaphragmatic base
             r_profile = sin_p * (1.02 - 0.18 * cos_p + 0.22 * (1.0 - cos_p) ** 1.4)
 
             for j, theta in enumerate(v):
                 lx = r_profile * math.cos(theta) * (1.12 if is_right_lung else 1.04)
                 lz = r_profile * math.sin(theta) * 1.18
 
-                # Flatten medial mediastinal surface facing the heart
                 medial_dir = -sign_x * math.cos(theta)
                 if medial_dir > 0.0:
                     lx *= (1.0 - 0.34 * (medial_dir ** 1.3))
 
-                # Anatomical Interlobar Fissures (grooves sculpted around lung perimeter)
-                # Oblique Fissure (present in both Right and Left lungs: slopes from posterior-superior to anterior-inferior)
                 fiss_y_oblique = -0.25 - 0.55 * math.sin(theta)
                 oblique_groove = 1.0 - 0.16 * math.exp(-((y - fiss_y_oblique) / 0.13) ** 2)
 
-                # Horizontal Fissure (present ONLY in Right Lung, anterior-lateral above middle lobe)
                 horiz_groove = 1.0
                 if is_right_lung and math.sin(theta) > -0.25:
                     horiz_groove = 1.0 - 0.14 * math.exp(-((y - 0.32) / 0.11) ** 2)
@@ -930,12 +1099,10 @@ class CardiopulmonaryAnatomyModel:
                 wy = y
                 wz = lz - 0.12
 
-                # Diaphragmatic concavity at the inferior base (domed upward beneath the lung)
                 if cos_p < -0.55:
                     dome_indent = ((abs(cos_p) - 0.55) / 0.45) ** 1.6
                     wy += 0.32 * dome_indent * (1.0 - 0.3 * (math.cos(theta) ** 2))
 
-                # Left Lung Cardiac Notch: deep anatomical indentation for the Left Ventricular Apex
                 if not is_right_lung:
                     notch_y = math.exp(-((wy + 0.55) / 0.85) ** 2)
                     notch_medial = max(0.0, -math.cos(theta - 0.35)) ** 1.5
@@ -968,14 +1135,9 @@ class CardiopulmonaryAnatomyModel:
 
         indices = np.array(indices, dtype=np.uint32)
         normals = compute_vertex_normals(vertices, indices)
-        # Soft rose-pink pleural tint with base alpha 0.17 for view-dependent transparency
-        return (vertices, normals, indices, (0.94, 0.56, 0.64, 0.17))
+        return (vertices, normals, indices, (0.94, 0.56, 0.64, 0.22))
 
     def _build_trachea_bronchi_and_alveoli(self):
-        """
-        Builds the solid internal Trachea, Cartilaginous Rings, Carina, Left & Right
-        Main Bronchi, Lobar/Segmental Bronchioles, and 36 Alveolar Sac Clusters.
-        """
         airway_meshes = []
         self.alveolar_centers = []
 
@@ -983,7 +1145,6 @@ class CardiopulmonaryAnatomyModel:
         ring_col = (0.95, 0.90, 0.86, 1.0)
         alveoli_col = (0.96, 0.62, 0.68, 1.0)
 
-        # 1. Trachea (Superior Mediastinum to Carina at y=1.82)
         trachea_pts = [
             [0.00, 3.25, -0.38],
             [0.00, 2.55, -0.36],
@@ -993,7 +1154,6 @@ class CardiopulmonaryAnatomyModel:
         vt, nt, it = build_tube_mesh(trachea_curve, 0.21, radial_segments=18)
         airway_meshes.append((vt, nt, it, airway_col))
 
-        # C-Shaped Hyaline Cartilaginous Rings along the Trachea
         for ry in np.linspace(1.95, 3.12, 9):
             ring_pts = [
                 [0.00, ry - 0.03, -0.36],
@@ -1002,22 +1162,16 @@ class CardiopulmonaryAnatomyModel:
             vr, nr, ir = build_tube_mesh(ring_pts, 0.228, radial_segments=16)
             airway_meshes.append((vr, nr, ir, ring_col))
 
-        # 2. Right Bronchial Tree (Superior, Middle, Inferior Lobar & Segmental Branches)
         right_branches = [
-            # Mainstem Bronchus -> Hilum
             ([[0.00, 1.82, -0.34], [-0.65, 1.55, -0.32], [-1.35, 1.25, -0.28]], 0.16, 0.13, False),
-            # Right Superior Lobe Branches (Apical, Anterior, Posterior)
             ([[-1.35, 1.25, -0.28], [-1.78, 1.62, -0.24], [-2.15, 1.98, -0.18]], 0.11, 0.055, True),
             ([[-1.78, 1.62, -0.24], [-2.28, 1.72,  0.22]], 0.08, 0.050, True),
             ([[-1.78, 1.62, -0.24], [-2.35, 1.58, -0.58]], 0.08, 0.050, True),
             ([[-1.35, 1.25, -0.28], [-2.45, 1.22,  0.05]], 0.09, 0.052, True),
-            # Bronchus Intermedius -> Middle & Inferior Lobes
             ([[-1.35, 1.25, -0.28], [-1.62, 0.68, -0.24], [-1.85, 0.05, -0.22]], 0.13, 0.10, False),
-            # Right Middle Lobe Branches (Lateral & Medial)
             ([[-1.62, 0.68, -0.24], [-2.12, 0.55,  0.18], [-2.58, 0.38,  0.42]], 0.09, 0.050, True),
             ([[-2.12, 0.55,  0.18], [-2.68, 0.65, -0.12]], 0.075, 0.048, True),
             ([[-1.62, 0.68, -0.24], [-2.05, 0.25,  0.32]], 0.08, 0.048, True),
-            # Right Inferior Lobe Branches (Superior, Anterior, Lateral, Posterior Basal)
             ([[-1.85, 0.05, -0.22], [-2.25, -0.52, -0.15], [-2.58, -1.08,  0.12]], 0.095, 0.052, True),
             ([[-2.25, -0.52, -0.15], [-2.78, -0.88, -0.35]], 0.08, 0.048, True),
             ([[-1.85, 0.05, -0.22], [-2.35, -0.45, -0.58], [-2.62, -1.02, -0.52]], 0.09, 0.050, True),
@@ -1025,19 +1179,14 @@ class CardiopulmonaryAnatomyModel:
             ([[-2.25, -0.52, -0.15], [-2.85, -0.32,  0.08]], 0.075, 0.046, True),
         ]
 
-        # 3. Left Bronchial Tree (Superior + Lingular & Inferior Lobar Branches)
         left_branches = [
-            # Left Mainstem Bronchus
             ([[0.00, 1.82, -0.34], [0.72, 1.48, -0.32], [1.42, 1.15, -0.28]], 0.15, 0.12, False),
-            # Left Superior Lobe (Apicoposterior & Anterior)
             ([[1.42, 1.15, -0.28], [1.82, 1.55, -0.24], [2.18, 1.95, -0.16]], 0.105, 0.052, True),
             ([[1.82, 1.55, -0.24], [2.32, 1.65,  0.22]], 0.08, 0.048, True),
             ([[1.82, 1.55, -0.24], [2.38, 1.52, -0.55]], 0.08, 0.048, True),
             ([[1.42, 1.15, -0.28], [2.48, 1.12,  0.08]], 0.085, 0.050, True),
-            # Lingular Division (Superior & Inferior Lingular)
             ([[1.42, 1.15, -0.28], [1.95, 0.58,  0.12], [2.48, 0.18,  0.38]], 0.09, 0.048, True),
             ([[1.95, 0.58,  0.12], [2.58, 0.52, -0.15]], 0.075, 0.046, True),
-            # Left Inferior Lobe Stem & Basal Branches
             ([[1.42, 1.15, -0.28], [1.75, 0.42, -0.26], [1.98, -0.22, -0.24]], 0.12, 0.095, False),
             ([[1.98, -0.22, -0.24], [2.32, -0.68, -0.12], [2.58, -1.12,  0.15]], 0.09, 0.050, True),
             ([[2.32, -0.68, -0.12], [2.75, -0.92, -0.35]], 0.08, 0.048, True),
@@ -1060,133 +1209,33 @@ class CardiopulmonaryAnatomyModel:
 
         return airway_meshes
 
-    def _build_interventricular_septum(self):
-        centerline = catmull_rom_spline([
-            [-0.08,  1.15, -0.18],
-            [-0.05,  0.55, -0.05],
-            [ 0.04, -0.15,  0.08],
-            [ 0.25, -0.95,  0.18],
-            [ 0.55, -1.68,  0.26],
-        ], num_samples=32)
-        radii = np.array([
-            0.22, 0.28, 0.34, 0.38, 0.42, 0.44, 0.45, 0.45,
-            0.44, 0.43, 0.42, 0.40, 0.38, 0.36, 0.33, 0.29,
-            0.24, 0.18
-        ], dtype=np.float32)
-        radii = np.interp(np.linspace(0, 1, 32), np.linspace(0, 1, len(radii)), radii)
-        verts, norms, idx = build_tube_mesh(centerline, radii, radial_segments=24)
-        verts[:, 0] *= 0.52
-        verts[:, 2] *= 1.65
-        norms = compute_vertex_normals(verts, idx)
-        return (verts, norms, idx, (0.64, 0.14, 0.18, 1.0))
-
-    def _build_inner_chamber_cradles(self):
-        cradles = []
-
-        rv_path = catmull_rom_spline([
-            [-0.90,  0.28,  0.12],
-            [-0.95, -0.35,  0.18],
-            [-0.65, -1.05,  0.22],
-            [-0.12, -1.48,  0.28],
-            [-0.22, -0.45,  0.42],
-            [-0.25,  0.48,  0.48],
-        ], num_samples=32)
-        rv_radii = np.linspace(0.54, 0.34, 32)
-        v_rv, n_rv, i_rv = build_tube_mesh(rv_path, rv_radii, radial_segments=18, arc_range=(2.3, 5.4))
-        cradles.append((v_rv, n_rv, i_rv, (0.68, 0.18, 0.22, 1.0)))
-
-        lv_path = catmull_rom_spline([
-            [ 0.78,  0.30, -0.12],
-            [ 0.92, -0.35,  0.02],
-            [ 0.88, -1.15,  0.15],
-            [ 0.68, -1.72,  0.28],
-            [ 0.38, -0.85,  0.12],
-            [ 0.22,  0.42,  0.04],
-        ], num_samples=34)
-        lv_radii = np.linspace(0.56, 0.36, 34)
-        v_lv, n_lv, i_lv = build_tube_mesh(lv_path, lv_radii, radial_segments=20, arc_range=(3.5, 6.7))
-        cradles.append((v_lv, n_lv, i_lv, (0.76, 0.16, 0.20, 1.0)))
-
-        ra_path = catmull_rom_spline([
-            [-1.12,  0.95, -0.08],
-            [-1.18,  0.65, -0.02],
-            [-1.00,  0.28,  0.12],
-        ], num_samples=18)
-        ra_radii = np.interp(np.linspace(0, 1, 18), [0.0, 0.5, 1.0], [0.36, 0.48, 0.42])
-        v_ra, n_ra, i_ra = build_tube_mesh(ra_path, ra_radii, radial_segments=16, arc_range=(2.1, 4.9))
-        cradles.append((v_ra, n_ra, i_ra, (0.62, 0.20, 0.28, 1.0)))
-
-        la_path = catmull_rom_spline([
-            [ 0.86,  0.95, -0.40],
-            [ 0.84,  0.68, -0.32],
-            [ 0.76,  0.30, -0.15],
-        ], num_samples=18)
-        la_radii = np.interp(np.linspace(0, 1, 18), [0.0, 0.5, 1.0], [0.35, 0.46, 0.40])
-        v_la, n_la, i_la = build_tube_mesh(la_path, la_radii, radial_segments=16, arc_range=(3.5, 6.3))
-        cradles.append((v_la, n_la, i_la, (0.78, 0.22, 0.26, 1.0)))
-
-        trabeculae_specs = [
-            ([[-0.85, -0.45, 0.02], [-0.55, -0.95, 0.08], [-0.15, -1.25, 0.18]], 0.075),
-            ([[-0.72, -0.15, -0.08], [-0.42, -0.68, -0.02], [-0.08, -0.92, 0.12]], 0.068),
-            ([[ 0.85, -0.38, -0.18], [ 0.78, -0.98, -0.05], [ 0.55, -1.48, 0.16]], 0.082),
-            ([[ 0.55, -0.25, -0.26], [ 0.52, -0.82, -0.14], [ 0.38, -1.32, 0.08]], 0.075),
-        ]
-        for pts, rad in trabeculae_specs:
-            curve = catmull_rom_spline(pts, num_samples=14)
-            vt, nt, it = build_tube_mesh(curve, rad, radial_segments=10)
-            cradles.append((vt, nt, it, (0.72, 0.15, 0.19, 1.0)))
-
-        return cradles
-
-    def _build_papillary_muscles(self):
-        specs = [
-            {"base": np.array([-0.92, -0.88,  0.32]), "tip": np.array([-0.82, -0.25,  0.24]), "valve": "tricuspid", "leaf_idx": 0},
-            {"base": np.array([-0.68, -1.05, -0.05]), "tip": np.array([-0.74, -0.28,  0.04]), "valve": "tricuspid", "leaf_idx": 1},
-            {"base": np.array([-0.22, -0.82,  0.16]), "tip": np.array([-0.48, -0.22,  0.16]), "valve": "tricuspid", "leaf_idx": 2},
-            {"base": np.array([ 0.92, -1.05,  0.10]), "tip": np.array([ 0.76, -0.26, -0.04]), "valve": "mitral", "leaf_idx": 0},
-            {"base": np.array([ 0.58, -1.12, -0.24]), "tip": np.array([ 0.64, -0.28, -0.22]), "valve": "mitral", "leaf_idx": 1},
-        ]
-        meshes = []
-        self.papillary_anchors = []
-        for sp in specs:
-            curve = catmull_rom_spline([
-                sp["base"],
-                0.5 * (sp["base"] + sp["tip"]) + np.array([0.0, 0.04, 0.02]),
-                sp["tip"]
-            ], num_samples=12)
-            radii = np.linspace(0.13, 0.045, 12)
-            vp, np_norm, ip = build_tube_mesh(curve, radii, radial_segments=12)
-            meshes.append((vp, np_norm, ip, (0.75, 0.18, 0.22, 1.0)))
-            self.papillary_anchors.append(sp)
-        return meshes
-
     def _build_translucent_vessels(self):
         vessels = []
-        artery_rgba = (0.95, 0.20, 0.24, 0.18)
-        vein_rgba = (0.24, 0.45, 0.95, 0.18)
-        pulm_art_rgba = (0.32, 0.48, 0.95, 0.18)
-        pulm_vein_rgba = (0.95, 0.24, 0.30, 0.18)
+        artery_rgba = (0.95, 0.20, 0.24, 0.28)
+        vein_rgba = (0.24, 0.45, 0.95, 0.28)
+        pulm_art_rgba = (0.32, 0.48, 0.95, 0.28)
+        pulm_vein_rgba = (0.95, 0.24, 0.30, 0.28)
 
         # 1. Ascending Aorta, Aortic Arch, Descending Aorta + Supra-aortic branches
         aorta_pts = [
-            [ 0.20,  0.62,  0.04],
-            [ 0.26,  1.18,  0.14],
-            [ 0.15,  1.82,  0.10],
-            [-0.12,  2.18, -0.12],
-            [-0.42,  2.02, -0.48],
-            [-0.48,  1.35, -0.78],
-            [-0.42,  0.10, -0.88],
-            [-0.38, -1.55, -0.85],
+            [ 0.18,  0.54,  0.02],
+            [ 0.24,  1.12,  0.10],
+            [ 0.12,  1.78,  0.06],
+            [-0.14,  2.14, -0.14],
+            [-0.42,  1.98, -0.48],
+            [-0.48,  1.32, -0.76],
+            [-0.42,  0.10, -0.84],
+            [-0.38, -1.52, -0.82],
         ]
         aorta_curve = catmull_rom_spline(aorta_pts, num_samples=52)
-        aorta_radii = np.interp(np.linspace(0, 1, 52), [0.0, 0.25, 0.5, 1.0], [0.34, 0.38, 0.34, 0.28])
+        aorta_radii = np.interp(np.linspace(0, 1, 52), [0.0, 0.25, 0.5, 1.0], [0.30, 0.34, 0.31, 0.26])
         vo, no, io = build_tube_mesh(aorta_curve, aorta_radii, radial_segments=22)
         vessels.append((vo, no, io, artery_rgba))
 
         branches = [
-            ([[ 0.10, 2.02,  0.04], [ 0.22, 2.48,  0.06], [ 0.32, 2.85,  0.08]], 0.13),
-            ([[-0.08, 2.15, -0.08], [-0.06, 2.58, -0.08], [-0.04, 2.92, -0.08]], 0.10),
-            ([[-0.28, 2.12, -0.28], [-0.35, 2.55, -0.30], [-0.42, 2.88, -0.32]], 0.10),
+            ([[ 0.08, 1.98,  0.02], [ 0.20, 2.45,  0.04], [ 0.30, 2.82,  0.06]], 0.12),
+            ([[-0.10, 2.12, -0.10], [-0.08, 2.55, -0.10], [-0.06, 2.90, -0.10]], 0.095),
+            ([[-0.28, 2.08, -0.28], [-0.35, 2.52, -0.30], [-0.42, 2.85, -0.32]], 0.095),
         ]
         for b_pts, b_rad in branches:
             bc = catmull_rom_spline(b_pts, num_samples=14)
@@ -1195,34 +1244,32 @@ class CardiopulmonaryAnatomyModel:
 
         # 2. Pulmonary Artery Trunk & Left/Right Pulmonary Arteries + Intrapulmonary Branches
         pulm_trunk_pts = [
-            [-0.25,  0.88,  0.52],
-            [-0.28,  1.35,  0.42],
-            [-0.18,  1.68,  0.18],
-            [ 0.45,  1.58, -0.12],
+            [-0.22,  0.76,  0.42],
+            [-0.24,  1.28,  0.34],
+            [-0.16,  1.62,  0.14],
+            [ 0.45,  1.54, -0.12],
             [ 1.35,  1.35, -0.20],
             [ 2.05,  1.55, -0.15],
         ]
         pulm_curve = catmull_rom_spline(pulm_trunk_pts, num_samples=38)
-        pulm_radii = np.interp(np.linspace(0, 1, 38), [0.0, 0.45, 1.0], [0.32, 0.28, 0.11])
+        pulm_radii = np.interp(np.linspace(0, 1, 38), [0.0, 0.45, 1.0], [0.28, 0.26, 0.11])
         vp, np_n, ip = build_tube_mesh(pulm_curve, pulm_radii, radial_segments=18)
         vessels.append((vp, np_n, ip, pulm_art_rgba))
 
-        # Right Pulmonary Artery entering Right Lung hilum & branching
         rpa_pts = [
-            [-0.18, 1.65,  0.15],
-            [-0.75, 1.52, -0.10],
+            [-0.16, 1.60,  0.12],
+            [-0.75, 1.50, -0.10],
             [-1.45, 1.32, -0.18],
             [-2.15, 1.65, -0.12],
         ]
         rpa_curve = catmull_rom_spline(rpa_pts, num_samples=26)
-        rpa_rad = np.interp(np.linspace(0, 1, 26), [0.0, 0.5, 1.0], [0.24, 0.20, 0.09])
+        rpa_rad = np.interp(np.linspace(0, 1, 26), [0.0, 0.5, 1.0], [0.22, 0.19, 0.09])
         vrpa, nrpa, irpa = build_tube_mesh(rpa_curve, rpa_rad, radial_segments=16)
         vessels.append((vrpa, nrpa, irpa, pulm_art_rgba))
 
-        # Additional intrapulmonary arterial branches into Inferior Lobes
         intra_pa = [
-            ([[-1.45, 1.32, -0.18], [-1.95, 0.35, -0.10], [-2.45, -0.75,  0.05]], 0.15, 0.06),
-            ([[ 1.35, 1.35, -0.20], [ 1.92, 0.32, -0.12], [ 2.42, -0.78,  0.08]], 0.15, 0.06),
+            ([[-1.45, 1.32, -0.18], [-1.95, 0.35, -0.10], [-2.45, -0.75,  0.05]], 0.14, 0.06),
+            ([[ 1.35, 1.35, -0.20], [ 1.92, 0.32, -0.12], [ 2.42, -0.78,  0.08]], 0.14, 0.06),
         ]
         for pts, r0, r1 in intra_pa:
             c = catmull_rom_spline(pts, num_samples=18)
@@ -1231,72 +1278,53 @@ class CardiopulmonaryAnatomyModel:
 
         # 3. Superior Vena Cava (SVC) & Inferior Vena Cava (IVC)
         svc_curve = catmull_rom_spline([
-            [-1.12,  2.65, -0.15],
-            [-1.12,  1.85, -0.10],
-            [-1.12,  1.05, -0.02],
+            [-0.96,  2.55, -0.10],
+            [-0.96,  1.75, -0.05],
+            [-0.95,  0.96,  0.02],
         ], num_samples=24)
-        v_svc, n_svc, i_svc = build_tube_mesh(svc_curve, 0.28, radial_segments=20)
+        v_svc, n_svc, i_svc = build_tube_mesh(svc_curve, 0.25, radial_segments=20)
         vessels.append((v_svc, n_svc, i_svc, vein_rgba))
 
         ivc_curve = catmull_rom_spline([
-            [-1.12, -1.75, -0.35],
-            [-1.12, -0.65, -0.22],
-            [-1.10,  0.48, -0.05],
+            [-0.98, -1.68, -0.28],
+            [-0.96, -0.55, -0.15],
+            [-0.95,  0.46,  0.00],
         ], num_samples=24)
-        v_ivc, n_ivc, i_ivc = build_tube_mesh(ivc_curve, 0.30, radial_segments=20)
+        v_ivc, n_ivc, i_ivc = build_tube_mesh(ivc_curve, 0.26, radial_segments=20)
         vessels.append((v_ivc, n_ivc, i_ivc, vein_rgba))
 
-        # 4. Four Pulmonary Veins extending from Left & Right Lung Alveolar Beds into Left Atrium
+        # 4. Four Pulmonary Veins entering Left Atrium
         pv_specs = [
-            ([[ 2.25, 1.35, -0.15], [ 1.52, 1.05, -0.35], [ 0.90, 0.90, -0.38]], 0.07, 0.15),
-            ([[ 2.38, -0.55, 0.05], [ 1.55, 0.35, -0.32], [ 0.88, 0.72, -0.38]], 0.07, 0.15),
-            ([[-2.25, 1.25, -0.20], [-0.65, 1.02, -0.52], [ 0.74, 0.90, -0.42]], 0.07, 0.14),
-            ([[-2.35, -0.55, 0.02], [-0.55, 0.38, -0.52], [ 0.74, 0.72, -0.42]], 0.07, 0.14),
+            ([[ 2.25, 1.35, -0.15], [ 1.48, 1.02, -0.30], [ 0.80, 0.88, -0.28]], 0.07, 0.14),
+            ([[ 2.38, -0.55, 0.05], [ 1.50, 0.35, -0.28], [ 0.78, 0.68, -0.28]], 0.07, 0.14),
+            ([[-2.25, 1.25, -0.20], [-0.55, 1.00, -0.48], [ 0.68, 0.88, -0.32]], 0.07, 0.13),
+            ([[-2.35, -0.55, 0.02], [-0.45, 0.38, -0.48], [ 0.68, 0.68, -0.32]], 0.07, 0.13),
         ]
         for pv_pts, r0, r1 in pv_specs:
             pvc = catmull_rom_spline(pv_pts, num_samples=22)
             vpv, npv, ipv = build_tube_mesh(pvc, np.linspace(r0, r1, 22), radial_segments=14)
             vessels.append((vpv, npv, ipv, pulm_vein_rgba))
 
-        # 5. Translucent Epicardial Coronary Arteries & Great Cardiac Vein
-        cor_artery_rgba = (0.95, 0.16, 0.20, 0.24)
-        cor_vein_rgba = (0.20, 0.42, 0.95, 0.24)
-
-        cor_specs = [
-            ([[ 0.28, 0.68, 0.18], [ 0.12, 0.38, 0.68], [ 0.16, -0.25, 0.86], [ 0.34, -0.98, 0.76], [ 0.58, -1.62, 0.52]], 0.048, 0.020, cor_artery_rgba),
-            ([[ 0.16, -0.15, 0.85], [ 0.62, -0.52, 0.78], [ 0.95, -1.02, 0.52]], 0.035, 0.016, cor_artery_rgba),
-            ([[ 0.28, 0.68, 0.18], [ 0.85, 0.42, 0.32], [ 1.25, 0.18, -0.15], [ 1.05, -0.35, -0.58]], 0.044, 0.018, cor_artery_rgba),
-            ([[ 0.12, 0.65, 0.22], [-0.55, 0.35, 0.62], [-1.12, -0.05, 0.38], [-1.05, -0.52, -0.25], [-0.45, -0.95, -0.58]], 0.046, 0.020, cor_artery_rgba),
-            ([[ 0.48, -1.52, 0.56], [ 0.24, -0.88, 0.80], [ 0.06, -0.18, 0.88], [ 0.72, 0.35, 0.42], [ 1.18, 0.22, -0.22]], 0.020, 0.042, cor_vein_rgba),
-        ]
-        for pts, r0, r1, col in cor_specs:
-            cc = catmull_rom_spline(pts, num_samples=24)
-            cr = np.linspace(r0, r1, 24)
-            vc, nc, ic = build_tube_mesh(cc, cr, radial_segments=10)
-            vessels.append((vc, nc, ic, col))
-
         return vessels
 
     def _build_all_geometry(self):
-        # 1A. Solid Opaque Inner Heart Structures
-        heart_solid_list = [self._build_interventricular_septum()]
-        heart_solid_list.extend(self._build_inner_chamber_cradles())
-        heart_solid_list.extend(self._build_papillary_muscles())
+        # 1A. Solid Opaque Inner Cardiac Core (Crux Septum + Trabeculae + Moderator Band + Papillary + Coronaries)
+        heart_solid_list = self._build_solid_core_skeleton()
         self.heart_solid_batch = FastDeformableBatch(heart_solid_list, is_translucent=False)
 
         # 1B. Solid Opaque Inner Lung Airway Tree (Trachea, Bronchi, Alveoli)
         lung_solid_list = self._build_trachea_bronchi_and_alveoli()
         self.lung_solid_batch = FastDeformableBatch(lung_solid_list, is_translucent=False)
 
-        # 2. View-Dependent Translucent Vessels Batch
+        # 2. Fresnel X-Ray Shaded Great Vessels Batch
         self.vessel_batch = FastDeformableBatch(self._build_translucent_vessels(), is_translucent=True)
 
-        # 3A. View-Dependent Translucent Outer Heart Shell
-        self.heart_shell_batch = FastDeformableBatch(
-            [self._build_outer_epicardial_shell()], is_translucent=True
-        )
+        # 3A. Fresnel X-Ray Shaded 4 Endocardial Chambers (RA, LA, RV, LV) + Outer Epicardial Shell
+        heart_shells = self._build_four_endocardial_chambers()
+        heart_shells.append(self._build_outer_epicardial_shell())
+        self.heart_shell_batch = FastDeformableBatch(heart_shells, is_translucent=True)
 
-        # 3B. View-Dependent Translucent Right & Left Lung Shells
+        # 3B. Fresnel X-Ray Shaded Right & Left Lung Shells
         lung_shells = [
             self._build_lung_shell(is_right_lung=True),
             self._build_lung_shell(is_right_lung=False),
@@ -1309,31 +1337,34 @@ class CardiopulmonaryAnatomyModel:
 # =============================================================================
 
 class HeartValveSystem:
-    """Renders and animates all 4 cardiac valves and dynamic chordae tendineae."""
+    """
+    Renders and animates all 4 solid cardiac valves and dynamic chordae tendineae
+    aligned inside the 4 chamber orifices.
+    """
     def __init__(self):
         self.valves = {
             "tricuspid": {
-                "pos": np.array([-0.78,  0.22,  0.18], dtype=np.float32),
-                "normal": normalize(np.array([0.12, -0.96, 0.14], dtype=np.float32)),
-                "radius": 0.34,
+                "pos": np.array([-0.64,  0.22,  0.14], dtype=np.float32),
+                "normal": normalize(np.array([0.14, -0.96, 0.12], dtype=np.float32)),
+                "radius": 0.29,
                 "num_leaflets": 3,
             },
             "mitral": {
-                "pos": np.array([ 0.72,  0.26, -0.12], dtype=np.float32),
-                "normal": normalize(np.array([0.06, -0.96, 0.16], dtype=np.float32)),
-                "radius": 0.32,
+                "pos": np.array([ 0.62,  0.24, -0.10], dtype=np.float32),
+                "normal": normalize(np.array([0.08, -0.96, 0.14], dtype=np.float32)),
+                "radius": 0.28,
                 "num_leaflets": 2,
             },
             "pulmonary": {
-                "pos": np.array([-0.25,  0.86,  0.50], dtype=np.float32),
-                "normal": normalize(np.array([-0.05, 0.94, -0.22], dtype=np.float32)),
-                "radius": 0.25,
+                "pos": np.array([-0.22,  0.76,  0.42], dtype=np.float32),
+                "normal": normalize(np.array([-0.04, 0.94, -0.22], dtype=np.float32)),
+                "radius": 0.23,
                 "num_leaflets": 3,
             },
             "aortic": {
-                "pos": np.array([ 0.20,  0.60,  0.04], dtype=np.float32),
-                "normal": normalize(np.array([0.10, 0.96, 0.16], dtype=np.float32)),
-                "radius": 0.26,
+                "pos": np.array([ 0.18,  0.54,  0.02], dtype=np.float32),
+                "normal": normalize(np.array([0.10, 0.96, 0.14], dtype=np.float32)),
+                "radius": 0.24,
                 "num_leaflets": 3,
             },
         }
@@ -1453,7 +1484,7 @@ class HeartValveSystem:
             if l_idx < len(tips):
                 pap_tip = pap_tips_def[idx_a]
                 leaf_tip = tips[l_idx]
-                for offset_scale in (-0.045, 0.0, 0.045):
+                for offset_scale in (-0.04, 0.0, 0.04):
                     cord_end = leaf_tip + np.array([offset_scale, 0.0, -offset_scale], dtype=np.float32)
                     mid_pt = 0.5 * (pap_tip + cord_end) + np.array([0.0, 0.02, 0.02], dtype=np.float32)
                     pts_c = ((1.0 - t_vals) ** 2) * pap_tip + 2.0 * (1.0 - t_vals) * t_vals * mid_pt + (t_vals ** 2) * cord_end
@@ -1469,13 +1500,8 @@ class HeartValveSystem:
 
 class CardiopulmonaryFlowSystem:
     """
-    Simulates:
-      1. 520 3D Erythrocytes (Red Blood Cells) flowing through 4 complete Heart-Lung-Heart
-         pathways where venous blue blood cells enter the Right & Left Lungs, undergo live
-         alveolar oxygenation (smoothly changing color from deep blue to bright crimson!),
-         return via the Pulmonary Veins to the Left Atrium, and eject through the Aorta.
-      2. 220 Respiratory Gas Molecules (O2 / CO2) oscillating down and up the Trachea,
-         Carina, and Left/Right Bronchial Trees in sync with lung inspiration and expiration.
+    Simulates 520 3D Erythrocytes undergoing live alveolar gas exchange and
+    220 respiratory O2/CO2 gas molecules oscillating in the bronchial tree.
     """
     def __init__(self, num_rbc=520, num_air=220):
         self.num_rbc = num_rbc
@@ -1486,96 +1512,77 @@ class CardiopulmonaryFlowSystem:
         self.reset_particles()
 
     def _build_cardiopulmonary_splines(self):
-        """
-        Each 260-sample spline is a complete cardiopulmonary circuit:
-          s in [0.00, 0.16]: Vena Cava -> Right Atrium
-          s in [0.16, 0.18]: Tricuspid Valve Gate
-          s in [0.18, 0.34]: Right Ventricle -> Pulmonary Valve Gate (s = 0.34)
-          s in [0.34, 0.46]: Pulmonary Trunk & Pulmonary Arteries into Lung Lobes
-          s in [0.46, 0.62]: Alveolar Capillary Bed (LIVE OXYGENATION: Blue -> Crimson!)
-          s in [0.62, 0.74]: Pulmonary Veins -> Left Atrium
-          s in [0.74, 0.76]: Mitral Valve Gate
-          s in [0.76, 0.88]: Left Ventricle -> Aortic Valve Gate (s = 0.88)
-          s in [0.88, 1.00]: Ascending Aorta -> Aortic Arch -> Systemic / Descending Aorta
-        """
-        # Circuit 0: SVC -> Right Heart -> Left Lung Superior Lobe Alveoli -> Left PV -> Left Heart -> Descending Aorta
         c0 = [
-            [-1.12,  2.55, -0.15],
-            [-1.12,  0.82,  0.02],  # RA
-            [-0.78,  0.22,  0.18],  # Tricuspid Valve
-            [-0.65, -0.95,  0.26],  # RV Apex
-            [-0.25,  0.86,  0.50],  # Pulmonary Valve
-            [-0.22,  1.58,  0.22],  # Pulmonary Trunk
-            [ 1.35,  1.42, -0.18],  # Left Pulmonary Artery
-            [ 2.28,  1.65, -0.05],  # Left Lung Superior Alveolar Bed (Oxygenation zone)
-            [ 1.55,  1.05, -0.35],  # Left Superior Pulmonary Vein
-            [ 0.84,  0.76, -0.32],  # LA
-            [ 0.72,  0.26, -0.12],  # Mitral Valve
-            [ 0.68, -1.45,  0.22],  # LV Apex
-            [ 0.20,  0.60,  0.04],  # Aortic Valve
-            [ 0.15,  1.88,  0.08],  # Ascending Aorta
-            [-0.42,  1.85, -0.58],  # Aortic Arch
-            [-0.38, -1.45, -0.85],  # Descending Aorta
+            [-0.96,  2.45, -0.10],
+            [-0.84,  0.72,  0.04],
+            [-0.64,  0.22,  0.14],
+            [-0.52, -0.88,  0.22],
+            [-0.22,  0.76,  0.42],
+            [-0.18,  1.52,  0.18],
+            [ 1.35,  1.42, -0.18],
+            [ 2.28,  1.65, -0.05],
+            [ 1.50,  1.02, -0.30],
+            [ 0.74,  0.74, -0.22],
+            [ 0.62,  0.24, -0.10],
+            [ 0.56, -1.32,  0.20],
+            [ 0.18,  0.54,  0.02],
+            [ 0.12,  1.82,  0.06],
+            [-0.42,  1.82, -0.56],
+            [-0.38, -1.42, -0.82],
         ]
-
-        # Circuit 1: IVC -> Right Heart -> Right Lung Superior/Middle Lobe Alveoli -> Right PV -> Left Heart -> Arch Branches
         c1 = [
-            [-1.12, -1.65, -0.35],
-            [-1.08,  0.68,  0.04],  # RA
-            [-0.78,  0.22,  0.18],  # Tricuspid Valve
-            [-0.55, -1.12,  0.28],  # RV Apex
-            [-0.25,  0.86,  0.50],  # Pulmonary Valve
-            [-0.22,  1.58,  0.22],  # Pulmonary Trunk
-            [-1.42,  1.38, -0.18],  # Right Pulmonary Artery
-            [-2.35,  1.52, -0.08],  # Right Lung Superior Alveolar Bed (Oxygenation zone)
-            [-0.65,  1.02, -0.50],  # Right Superior Pulmonary Vein
-            [ 0.80,  0.76, -0.34],  # LA
-            [ 0.72,  0.26, -0.12],  # Mitral Valve
-            [ 0.64, -1.48,  0.22],  # LV Apex
-            [ 0.20,  0.60,  0.04],  # Aortic Valve
-            [ 0.18,  1.92,  0.06],  # Ascending Aorta
-            [-0.06,  2.35, -0.08],  # Carotid / Arch Branch
-            [-0.04,  2.90, -0.08],
+            [-0.98, -1.58, -0.28],
+            [-0.84,  0.64,  0.04],
+            [-0.64,  0.22,  0.14],
+            [-0.45, -0.98,  0.24],
+            [-0.22,  0.76,  0.42],
+            [-0.18,  1.52,  0.18],
+            [-1.42,  1.38, -0.18],
+            [-2.35,  1.52, -0.08],
+            [-0.55,  1.00, -0.48],
+            [ 0.72,  0.74, -0.22],
+            [ 0.62,  0.24, -0.10],
+            [ 0.54, -1.35,  0.20],
+            [ 0.18,  0.54,  0.02],
+            [ 0.15,  1.88,  0.04],
+            [-0.08,  2.32, -0.10],
+            [-0.06,  2.88, -0.10],
         ]
-
-        # Circuit 2: SVC -> Right Heart -> Left Lung Inferior Lobe Alveoli -> Left Inf PV -> Left Heart -> Descending Aorta
         c2 = [
-            [-1.12,  2.45, -0.15],
-            [-1.10,  0.78,  0.02],  # RA
-            [-0.78,  0.22,  0.18],  # Tricuspid Valve
-            [-0.68, -1.05,  0.26],  # RV
-            [-0.25,  0.86,  0.50],  # Pulmonary Valve
-            [-0.18,  1.62,  0.18],  # Pulmonary Trunk
-            [ 1.75,  0.48, -0.15],  # Left Inferior Pulmonary Artery
-            [ 2.48, -0.78,  0.08],  # Left Lung Inferior Alveolar Bed (Oxygenation zone)
-            [ 1.55,  0.38, -0.32],  # Left Inferior Pulmonary Vein
-            [ 0.84,  0.72, -0.32],  # LA
-            [ 0.72,  0.26, -0.12],  # Mitral Valve
-            [ 0.66, -1.50,  0.24],  # LV Apex
-            [ 0.20,  0.60,  0.04],  # Aortic Valve
-            [ 0.12,  1.95,  0.06],  # Aortic Arch
-            [-0.45,  1.25, -0.78],
-            [-0.38, -1.45, -0.85],
+            [-0.96,  2.35, -0.10],
+            [-0.84,  0.70,  0.04],
+            [-0.64,  0.22,  0.14],
+            [-0.54, -0.92,  0.22],
+            [-0.22,  0.76,  0.42],
+            [-0.16,  1.58,  0.16],
+            [ 1.75,  0.48, -0.15],
+            [ 2.48, -0.78,  0.08],
+            [ 1.50,  0.35, -0.28],
+            [ 0.74,  0.68, -0.22],
+            [ 0.62,  0.24, -0.10],
+            [ 0.56, -1.38,  0.22],
+            [ 0.18,  0.54,  0.02],
+            [ 0.10,  1.90,  0.04],
+            [-0.45,  1.22, -0.76],
+            [-0.38, -1.42, -0.82],
         ]
-
-        # Circuit 3: IVC -> Right Heart -> Right Lung Inferior Lobe Alveoli -> Right Inf PV -> Left Heart -> Brachiocephalic
         c3 = [
-            [-1.12, -1.65, -0.35],
-            [-1.08,  0.70,  0.04],  # RA
-            [-0.78,  0.22,  0.18],  # Tricuspid Valve
-            [-0.60, -1.08,  0.28],  # RV
-            [-0.25,  0.86,  0.50],  # Pulmonary Valve
-            [-0.20,  1.60,  0.18],  # Pulmonary Trunk
-            [-1.85,  0.42, -0.14],  # Right Inferior Pulmonary Artery
-            [-2.52, -0.75,  0.06],  # Right Lung Inferior Alveolar Bed (Oxygenation zone)
-            [-0.55,  0.40, -0.50],  # Right Inferior Pulmonary Vein
-            [ 0.80,  0.72, -0.34],  # LA
-            [ 0.72,  0.26, -0.12],  # Mitral Valve
-            [ 0.62, -1.46,  0.22],  # LV Apex
-            [ 0.20,  0.60,  0.04],  # Aortic Valve
-            [ 0.16,  1.95,  0.05],  # Ascending Aorta
-            [ 0.22,  2.48,  0.06],  # Brachiocephalic Artery
-            [ 0.32,  2.85,  0.08],
+            [-0.98, -1.58, -0.28],
+            [-0.84,  0.66,  0.04],
+            [-0.64,  0.22,  0.14],
+            [-0.48, -0.95,  0.24],
+            [-0.22,  0.76,  0.42],
+            [-0.18,  1.56,  0.16],
+            [-1.85,  0.42, -0.14],
+            [-2.52, -0.75,  0.06],
+            [-0.45,  0.38, -0.48],
+            [ 0.72,  0.68, -0.22],
+            [ 0.62,  0.24, -0.10],
+            [ 0.52, -1.34,  0.20],
+            [ 0.18,  0.54,  0.02],
+            [ 0.14,  1.90,  0.03],
+            [ 0.20,  2.45,  0.04],
+            [ 0.30,  2.82,  0.06],
         ]
 
         self.n_samples = 260
@@ -1605,7 +1612,6 @@ class CardiopulmonaryFlowSystem:
             self.frame_n2[k] = n2
 
     def _build_airway_splines(self):
-        """Builds 6 Tracheobronchial airway paths from the upper Trachea into the Alveolar Lobes."""
         air_paths = [
             [[0.0, 3.22, -0.38], [0.0, 1.82, -0.34], [-1.35, 1.25, -0.28], [-2.15, 1.92, -0.18]],
             [[0.0, 3.22, -0.38], [0.0, 1.82, -0.34], [-1.35, 1.25, -0.28], [-1.62, 0.68, -0.24], [-2.52, 0.38,  0.38]],
@@ -1668,11 +1674,10 @@ class CardiopulmonaryFlowSystem:
         self.path_id = rng.integers(0, 4, size=self.num_rbc)
         self.s = rng.uniform(0.0, 1.0, size=self.num_rbc).astype(np.float32)
         self.radial_angle = rng.uniform(0.0, 2.0 * math.pi, size=self.num_rbc).astype(np.float32)
-        self.radial_dist = rng.uniform(0.01, 0.085, size=self.num_rbc).astype(np.float32)
+        self.radial_dist = rng.uniform(0.01, 0.08, size=self.num_rbc).astype(np.float32)
         self.speed_mult = rng.uniform(0.88, 1.14, size=self.num_rbc).astype(np.float32)
         self.current_vel = np.full(self.num_rbc, 0.18, dtype=np.float32)
 
-        # Airway ventilation particles
         self.air_path_id = rng.integers(0, 6, size=self.num_air)
         self.air_s = rng.uniform(0.02, 0.98, size=self.num_air).astype(np.float32)
         self.air_jitter = rng.uniform(-0.045, 0.045, size=(self.num_air, 3)).astype(np.float32)
@@ -1681,11 +1686,6 @@ class CardiopulmonaryFlowSystem:
         if dt <= 0.0:
             return
 
-        # Landmark valve gates along the 4 full-circuit cardiopulmonary splines:
-        #   Tricuspid Gate : s = 0.16
-        #   Pulmonary Gate : s = 0.31
-        #   Mitral Gate    : s = 0.70
-        #   Aortic Gate    : s = 0.82
         s = self.s
         tric_open = cycle.tricuspid_open
         pulm_open = cycle.pulmonary_open
@@ -1695,38 +1695,31 @@ class CardiopulmonaryFlowSystem:
         vel = np.full_like(s, 0.18)
         swirl = np.full_like(s, 1.8)
 
-        # 1. Right Atrium & Tricuspid inflow
         m_ra = (s >= 0.08) & (s < 0.16)
         vel[m_ra] = 0.18 + 0.35 * max(0.0, cycle.atrial_contraction) if tric_open > 0.15 else 0.03
         if tric_open <= 0.15:
             swirl[m_ra] += 4.5
 
-        # 2. Right Ventricle & Pulmonary outflow
         m_rv = (s >= 0.16) & (s < 0.31)
         vel[m_rv] = 0.22 + 0.52 * cycle.ventricular_contraction if pulm_open > 0.15 else (0.16 * tric_open + 0.04)
 
-        # 3. Pulmonary Arteries -> Alveolar Capillary Bed -> Pulmonary Veins
         m_lungs = (s >= 0.31) & (s < 0.64)
         vel[m_lungs] = 0.16 + 0.28 * cycle.arterial_pulse + 0.06 * cycle.lung_inflation
 
-        # 4. Left Atrium & Mitral inflow
         m_la = (s >= 0.64) & (s < 0.70)
         vel[m_la] = 0.18 + 0.35 * max(0.0, cycle.atrial_contraction) if mitr_open > 0.15 else 0.03
         if mitr_open <= 0.15:
             swirl[m_la] += 4.5
 
-        # 5. Left Ventricle & Aortic ejection
         m_lv = (s >= 0.70) & (s < 0.82)
         vel[m_lv] = 0.24 + 0.56 * cycle.ventricular_contraction if aort_open > 0.15 else (0.16 * mitr_open + 0.04)
 
-        # 6. Systemic Aortic Arch outflow
         m_ao = s >= 0.82
         vel[m_ao] = 0.16 + 0.55 * cycle.arterial_pulse
 
         vel *= self.speed_mult
         s_next = s + vel * dt
 
-        # Physical Valve Gating across all 4 valves
         for gate_s, v_open in ((0.16, tric_open), (0.31, pulm_open), (0.70, mitr_open), (0.82, aort_open)):
             if v_open < 0.20:
                 blocked = (s < gate_s) & (s_next >= gate_s)
@@ -1737,10 +1730,8 @@ class CardiopulmonaryFlowSystem:
         self.current_vel = vel
         self.radial_angle += swirl * dt
 
-        # Update Respiratory Airway Particles (oscillating with inspiration / expiration airflow)
         air_vel = 0.52 * cycle.airflow_velocity
         self.air_s = np.clip(self.air_s + air_vel * dt, 0.02, 0.98)
-        # Wrap particles that reach ends during peak flow so stream looks continuous
         if cycle.airflow_velocity > 0.15:
             wrapped = self.air_s >= 0.97
             self.air_s[wrapped] = np.random.uniform(0.02, 0.12, size=np.count_nonzero(wrapped))
@@ -1767,8 +1758,6 @@ class CardiopulmonaryFlowSystem:
         world_pts = base_pts + dist * (cos_a * n1 + sin_a * n2)
         world_pts = deform_points_direct(world_pts, cycle)
 
-        # Compute live Alveolar Gas Exchange Oxygenation fraction [0 = venous blue, 1 = arterial crimson]
-        # Blood oxygenates smoothly between s = 0.43 and s = 0.56 inside the Left & Right Lung Alveoli!
         oxy_frac = smoothstep01((self.s - 0.43) / 0.13)[:, None]
         venous_rgb = np.array([0.14, 0.46, 0.98], dtype=np.float32)
         arterial_rgb = np.array([0.98, 0.14, 0.18], dtype=np.float32)
@@ -1791,7 +1780,6 @@ class CardiopulmonaryFlowSystem:
 
         glDisableClientState(GL_NORMAL_ARRAY)
 
-        # Render hydrodynamic velocity streaks
         streak_len = np.minimum(0.15, 0.22 * self.current_vel)[:, None]
         self.streak_verts[:, 0, :] = world_pts
         self.streak_verts[:, 1, :] = world_pts - streak_len * tangents
@@ -1804,7 +1792,6 @@ class CardiopulmonaryFlowSystem:
         glColorPointer(3, GL_FLOAT, 0, self.streak_colors.reshape(-1, 3))
         glDrawArrays(GL_LINES, 0, self.num_rbc * 2)
 
-        # Render Respiratory O2 / CO2 Airway Gas Particles only when lungs are visible
         if show_lungs:
             a_idx_f = self.air_s * (self.n_air_samples - 1)
             a_idx0 = a_idx_f.astype(np.int32)
@@ -1969,8 +1956,8 @@ class HUDOverlay:
             self.draw_text(26, 219, "  [ [ / ] ] or [1 - 5] : Simulation Speed (0.10x - 3.00x)", self.font_body, (155, 235, 255))
             self.draw_text(26, 236, "  [P] Pause | [R] Reset | [M] Sound | [L] Lungs | [H] HUD", self.font_body, (255, 225, 155))
             self.draw_text(26, 256, "Blood & Gas: [Blue] Venous -> [Alveoli O2] -> [Red] Arterial", self.font_body, (200, 215, 250))
-            self.draw_text(26, 273, "Airway Flow: [Cyan] Inhaled O2 | [Lavender] Exhaled CO2", self.font_body, (175, 240, 255))
-            self.draw_text(26, 290, "Optics: Front-Facing Side Auto-More Transparent Than Backside", self.font_body, (175, 235, 195))
+            self.draw_text(26, 273, "Chambers: Sculpted RA, LA, RV, LV + Solid Crux Septum Core", self.font_body, (175, 240, 255))
+            self.draw_text(26, 290, "Optics: Fresnel Rim-Lit Contours + Clear Center X-Ray Window", self.font_body, (175, 235, 195))
 
             # 2. Right Panel: Valves, Lead II ECG, Heart PCG & Lung Spirometry
             rx_box = self.width - 340
@@ -2021,7 +2008,7 @@ class HUDOverlay:
                 glVertex2f(px, py)
             glEnd()
 
-            # Trace 3: Pulmonary Spirometry (Tidal Volume & Alveolar O2 Exchange)
+            # Trace 3: Pulmonary Spirometry
             sp_x, sp_y, sp_w, sp_h = rx_box + 14, 294, 296, 82
             self.draw_box(sp_x, sp_y, sp_w, sp_h, (0.02, 0.05, 0.08, 0.92), (0.22, 0.42, 0.58, 0.8))
             self.draw_text(
@@ -2136,7 +2123,7 @@ def main():
         pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
 
     pygame.display.set_caption(
-        "PyOpenGL 3D Cardiopulmonary Simulator - Heart, Lungs, Bronchi, Alveolar Gas Exchange & Directional Transparency"
+        "PyOpenGL 3D Cardiopulmonary Simulator - 4-Chamber Fresnel X-Ray & Solid Crux Core"
     )
 
     glEnable(GL_DEPTH_TEST)
@@ -2300,10 +2287,8 @@ def main():
         if keys[K_s] or keys[K_MINUS]:
             cam_zoom = min(18.0, cam_zoom + 4.5 * dt)
 
-        # Compute exact camera view vector in 3D model space for directional front/back transparency
         cam_view_dir = compute_model_space_camera_dir(cam_rot)
 
-        # Update Cardiopulmonary Cycle, Audio, Deformable Batches & Flow Particles
         sim_dt = 0.0 if paused else (dt * sim_speed)
         cycle.update(sim_dt)
         audio.update_and_trigger(
@@ -2330,7 +2315,7 @@ def main():
         glRotatef(cam_rot[2], 0.0, 0.0, 1.0)
 
         # =====================================================================
-        # PASS 1: OPAQUE SOLID INNER ANATOMY
+        # PASS 1: OPAQUE SOLID CORE SKELETON, VALVES & BLOOD
         # =====================================================================
         glDisable(GL_BLEND)
         glDepthMask(GL_TRUE)
@@ -2343,25 +2328,27 @@ def main():
         flow.render(cycle, show_lungs=show_lungs)
 
         # =====================================================================
-        # PASS 2: DIRECTIONAL VIEW-DEPENDENT TRANSLUCENT LAYERS
+        # PASS 2: FRESNEL X-RAY SHADED 4 CHAMBERS, OUTER HEART SHELL & LUNGS
+        #   - Center of camera-facing walls = clear low-alpha window
+        #   - Edges, chamber boundaries & wall thickness = bold & rich!
         # =====================================================================
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glDepthMask(GL_FALSE)
         glEnable(GL_CULL_FACE)
-        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [0.30, 0.28, 0.32, 1.0])
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [0.45, 0.40, 0.42, 1.0])
 
-        # Pass 2A: Backside surfaces (more opaque backdrop)
+        # Pass 2A: Backside surfaces (rich anatomical chamber backdrop)
         glCullFace(GL_FRONT)
         anatomy.vessel_batch.draw_translucent_pass(is_front_pass=False, shininess=45.0)
-        anatomy.heart_shell_batch.draw_translucent_pass(is_front_pass=False, shininess=55.0)
+        anatomy.heart_shell_batch.draw_translucent_pass(is_front_pass=False, shininess=58.0)
         if show_lungs:
             anatomy.lung_shell_batch.draw_translucent_pass(is_front_pass=False, shininess=55.0)
 
-        # Pass 2B: Frontside camera-facing surfaces (ultra-clear window)
+        # Pass 2B: Frontside camera-facing surfaces (rim-lit contours + clear center window)
         glCullFace(GL_BACK)
         anatomy.vessel_batch.draw_translucent_pass(is_front_pass=True, shininess=45.0)
-        anatomy.heart_shell_batch.draw_translucent_pass(is_front_pass=True, shininess=55.0)
+        anatomy.heart_shell_batch.draw_translucent_pass(is_front_pass=True, shininess=58.0)
         if show_lungs:
             anatomy.lung_shell_batch.draw_translucent_pass(is_front_pass=True, shininess=55.0)
 
